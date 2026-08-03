@@ -25,6 +25,11 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use('/api/uploads', express.static(uploadsDir));
 
+// Health check endpoint
+app.get(['/', '/api', '/api/health'], (req, res) => {
+  res.send('[EchoLink] Backend Server SUCCESS!');
+});
+
 // Configure Multer for File Uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
@@ -148,251 +153,215 @@ app.get('/api/rooms/:roomCode/messages', (req, res) => {
 
 // 5. Upload File Attachment (Legacy handler)
 app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ success: false, error: 'No file uploaded' });
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No file uploaded' });
+    }
+    const attachment = {
+      id: uuidv4(),
+      filename: req.file.originalname,
+      fileUrl: `/api/uploads/${req.file.filename}`,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size
+    };
+    res.json({ success: true, attachment });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
-
-  const attachment = {
-    id: uuidv4(),
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    fileUrl: `/api/uploads/${req.file.filename}`,
-    fileType: req.file.mimetype,
-    fileSize: req.file.size,
-    createdAt: new Date().toISOString()
-  };
-
-  res.json({ success: true, attachment });
 });
 
-// --- SOCKET.IO REAL-TIME SIGNALING & CHAT ---
-
+// --- REAL-TIME WEBRTC & CHAT SIGNALING (SOCKET.IO) ---
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
-  transports: ['websocket', 'polling']
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  },
+  pingTimeout: 30000,
+  pingInterval: 10000
 });
 
 io.on('connection', (socket) => {
-  
-  // 1. Join Voice & Text Room
-  socket.on('join_room', (data) => {
-    const { roomCode: rawCode, guestId, displayName, avatarColor } = data || {};
-    if (!rawCode) {
-      return socket.emit('error', { message: 'Room code required' });
+  let currentRoomCode = null;
+  let currentUser = null;
+
+  // 1. Join Room
+  socket.on('join_room', ({ roomCode, displayName, isMicOn = false, isCamOn = false }) => {
+    const room = findRoomByQuery(roomCode);
+    if (!room) {
+      return socket.emit('error', { message: 'Room not found' });
     }
 
-    const room = findRoomByQuery(rawCode);
-    const roomCode = room ? room.roomCode : rawCode;
+    const code = room.roomCode;
+    currentRoomCode = code;
+    socket.join(code);
 
-    socket.join(roomCode);
-
-    if (!activeRooms.has(roomCode)) {
-      activeRooms.set(roomCode, new Map());
+    if (!activeRooms.has(code)) {
+      activeRooms.set(code, new Map());
     }
 
-    const roomMap = activeRooms.get(roomCode);
-    const isHost = roomMap.size === 0;
-
-    const userInfo = {
+    const roomParticipants = activeRooms.get(code);
+    currentUser = {
       socketId: socket.id,
-      guestId: guestId || socket.id,
+      userId: socket.id,
       displayName: sanitize(displayName || 'Guest', 32),
-      avatarColor: avatarColor || '#00f2fe',
-      isHost,
-      isMuted: false,
-      isDeafened: false,
-      isSpeaking: false
+      isMicOn: Boolean(isMicOn),
+      isCamOn: Boolean(isCamOn),
+      isHandRaised: false,
+      isSpeaking: false,
+      joinedAt: new Date().toISOString()
     };
 
-    roomMap.set(socket.id, userInfo);
+    roomParticipants.set(socket.id, currentUser);
 
-    // Send existing room participants to the new joiner
-    const existingUsers = Array.from(roomMap.values()).filter(u => u.socketId !== socket.id);
-    socket.emit('room_users', {
-      users: existingUsers,
-      selfInfo: userInfo
+    const participantList = Array.from(roomParticipants.values());
+    socket.emit('room_joined', {
+      room,
+      participants: participantList,
+      yourSocketId: socket.id
     });
 
-    // Notify all other users in the room
-    socket.to(roomCode).emit('user_joined', userInfo);
+    socket.to(code).emit('user_joined', { participant: currentUser });
   });
 
-  // 2. WebRTC Offer
-  socket.on('webrtc_offer', ({ targetSocketId, offer, callerInfo }) => {
-    if (targetSocketId && offer) {
-      io.to(targetSocketId).emit('webrtc_offer', {
-        callerSocketId: socket.id,
-        offer,
-        callerInfo
-      });
-    }
+  // 2. WebRTC Signaling (Offers, Answers, ICE Candidates)
+  socket.on('webrtc_offer', ({ targetSocketId, offer }) => {
+    io.to(targetSocketId).emit('webrtc_offer', {
+      senderSocketId: socket.id,
+      offer
+    });
   });
 
-  // 3. WebRTC Answer
   socket.on('webrtc_answer', ({ targetSocketId, answer }) => {
-    if (targetSocketId && answer) {
-      io.to(targetSocketId).emit('webrtc_answer', {
-        responderSocketId: socket.id,
-        answer
-      });
-    }
+    io.to(targetSocketId).emit('webrtc_answer', {
+      senderSocketId: socket.id,
+      answer
+    });
   });
 
-  // 4. WebRTC ICE Candidate
   socket.on('webrtc_candidate', ({ targetSocketId, candidate }) => {
-    if (targetSocketId && candidate) {
-      io.to(targetSocketId).emit('webrtc_candidate', {
-        senderSocketId: socket.id,
-        candidate
-      });
-    }
+    io.to(targetSocketId).emit('webrtc_candidate', {
+      senderSocketId: socket.id,
+      candidate
+    });
   });
 
-  // 5. Media State Change (Mute / Deafened)
-  socket.on('media_state_change', ({ roomCode, isMuted, isDeafened }) => {
-    const roomMap = activeRooms.get(roomCode);
-    if (roomMap && roomMap.has(socket.id)) {
-      const user = roomMap.get(socket.id);
-      user.isMuted = Boolean(isMuted);
-      user.isDeafened = Boolean(isDeafened);
-      socket.to(roomCode).emit('user_media_state_changed', {
+  // 3. Media Controls (Mic, Cam, Hand Raise)
+  socket.on('media_state_change', ({ isMicOn, isCamOn, isHandRaised }) => {
+    if (!currentRoomCode || !currentUser) return;
+    const roomParticipants = activeRooms.get(currentRoomCode);
+    if (roomParticipants && roomParticipants.has(socket.id)) {
+      const user = roomParticipants.get(socket.id);
+      if (typeof isMicOn === 'boolean') user.isMicOn = isMicOn;
+      if (typeof isCamOn === 'boolean') user.isCamOn = isCamOn;
+      if (typeof isHandRaised === 'boolean') user.isHandRaised = isHandRaised;
+
+      io.to(currentRoomCode).emit('user_media_changed', {
         socketId: socket.id,
-        isMuted: user.isMuted,
-        isDeafened: user.isDeafened
+        isMicOn: user.isMicOn,
+        isCamOn: user.isCamOn,
+        isHandRaised: user.isHandRaised
       });
     }
   });
 
-  // 6. Speaking Indicator Level
-  socket.on('speaking_state', ({ roomCode, isSpeaking, level }) => {
-    const roomMap = activeRooms.get(roomCode);
-    if (roomMap && roomMap.has(socket.id)) {
-      const user = roomMap.get(socket.id);
+  socket.on('speaking_state', ({ isSpeaking }) => {
+    if (!currentRoomCode || !currentUser) return;
+    const roomParticipants = activeRooms.get(currentRoomCode);
+    if (roomParticipants && roomParticipants.has(socket.id)) {
+      const user = roomParticipants.get(socket.id);
       user.isSpeaking = Boolean(isSpeaking);
-      socket.to(roomCode).emit('user_speaking', {
+      io.to(currentRoomCode).emit('user_speaking_changed', {
         socketId: socket.id,
-        isSpeaking: user.isSpeaking,
-        level: level || 0
+        isSpeaking: user.isSpeaking
       });
     }
   });
 
-  // 7. Kick Participant (Host feature)
-  socket.on('kick_participant', ({ roomCode, targetSocketId }) => {
-    const roomMap = activeRooms.get(roomCode);
-    if (roomMap && roomMap.has(socket.id)) {
-      const requester = roomMap.get(socket.id);
-      if (requester.isHost) {
-        io.to(targetSocketId).emit('kicked_from_room', { reason: 'Kicked by host' });
-        roomMap.delete(targetSocketId);
-        io.to(roomCode).emit('user_left', { socketId: targetSocketId });
-      }
+  // 4. Kick Participant (Host)
+  socket.on('kick_participant', ({ targetSocketId }) => {
+    if (!currentRoomCode) return;
+    io.to(targetSocketId).emit('kicked_from_room');
+    const targetSocket = io.sockets.sockets.get(targetSocketId);
+    if (targetSocket) {
+      targetSocket.leave(currentRoomCode);
     }
+    const roomParticipants = activeRooms.get(currentRoomCode);
+    if (roomParticipants) {
+      roomParticipants.delete(targetSocketId);
+    }
+    io.to(currentRoomCode).emit('user_left', { socketId: targetSocketId });
   });
 
-  // 8. Text Chat Message
-  socket.on('send_message', (data) => {
-    const { roomCode, userId, displayName, avatarColor, content, replyTo } = data || {};
-    if (!roomCode || !content) return;
+  // 5. Live Chat Messaging
+  socket.on('send_message', ({ text, attachment }) => {
+    if (!currentRoomCode || !currentUser) return;
 
-    const msg = {
+    const messageObj = {
       id: uuidv4(),
-      roomCode,
-      userId,
-      displayName: sanitize(displayName || 'Guest', 32),
-      avatarColor: avatarColor || '#00f2fe',
-      content: sanitize(content || '', 2000),
-      replyToAuthor: replyTo ? sanitize(replyTo.displayName, 32) : null,
-      replyToContent: replyTo ? sanitize(replyTo.content, 500) : null,
-      isEdited: false,
-      isDeleted: false,
-      createdAt: new Date().toISOString()
+      senderId: socket.id,
+      senderName: currentUser.displayName,
+      text: sanitize(text || '', 1000),
+      attachment: attachment || null,
+      timestamp: new Date().toISOString(),
+      isDeleted: false
     };
 
-    if (!messages.has(roomCode)) {
-      messages.set(roomCode, []);
+    if (!messages.has(currentRoomCode)) {
+      messages.set(currentRoomCode, []);
     }
-    messages.get(roomCode).push(msg);
+    messages.get(currentRoomCode).push(messageObj);
 
-    io.to(roomCode).emit('new_message', msg);
+    io.to(currentRoomCode).emit('new_message', { message: messageObj });
   });
 
-  // 9. Typing Indicator
-  socket.on('typing_indicator', ({ roomCode, displayName, isTyping }) => {
-    socket.to(roomCode).emit('user_typing', {
-      displayName: sanitize(displayName || 'Guest', 32),
+  socket.on('typing_indicator', ({ isTyping }) => {
+    if (!currentRoomCode || !currentUser) return;
+    socket.to(currentRoomCode).emit('user_typing', {
+      socketId: socket.id,
+      displayName: currentUser.displayName,
       isTyping: Boolean(isTyping)
     });
   });
 
-  // 10. Edit Message
-  socket.on('edit_message', ({ roomCode, messageId, newContent }) => {
-    const roomMessages = messages.get(roomCode);
-    if (roomMessages) {
-      const msg = roomMessages.find(m => m.id === messageId);
-      if (msg) {
-        msg.content = sanitize(newContent, 2000);
-        msg.isEdited = true;
-        io.to(roomCode).emit('message_edited', msg);
-      }
+  socket.on('delete_message', ({ messageId }) => {
+    if (!currentRoomCode) return;
+    const roomMessages = messages.get(currentRoomCode) || [];
+    const msg = roomMessages.find(m => m.id === messageId);
+    if (msg) {
+      msg.isDeleted = true;
+      io.to(currentRoomCode).emit('message_deleted', { messageId });
     }
   });
 
-  // 11. Delete Message
-  socket.on('delete_message', ({ roomCode, messageId }) => {
-    const roomMessages = messages.get(roomCode);
-    if (roomMessages) {
-      const msgIndex = roomMessages.findIndex(m => m.id === messageId);
-      if (msgIndex !== -1) {
-        roomMessages[msgIndex].isDeleted = true;
-        io.to(roomCode).emit('message_deleted', { messageId });
+  // 6. Leaving & Disconnecting
+  const handleLeave = () => {
+    if (!currentRoomCode || !currentUser) return;
+
+    const roomParticipants = activeRooms.get(currentRoomCode);
+    if (roomParticipants) {
+      roomParticipants.delete(socket.id);
+
+      io.to(currentRoomCode).emit('user_left', { socketId: socket.id });
+
+      // Auto-delete room if empty and autoDelete is enabled
+      if (roomParticipants.size === 0) {
+        const room = findRoomByQuery(currentRoomCode);
+        if (room && room.autoDelete) {
+          rooms.delete(room.roomCode);
+          messages.delete(room.roomCode);
+          activeRooms.delete(room.roomCode);
+        }
       }
     }
-  });
 
-  // 12. Explicit Leave Room
-  socket.on('leave_room', ({ roomCode }) => {
-    cleanupUser(socket.id, roomCode);
-  });
+    socket.leave(currentRoomCode);
+    currentRoomCode = null;
+    currentUser = null;
+  };
 
-  // 13. Disconnect Event
-  socket.on('disconnect', () => {
-    for (const [roomCode, roomMap] of activeRooms.entries()) {
-      if (roomMap.has(socket.id)) {
-        cleanupUser(socket.id, roomCode);
-      }
-    }
-  });
+  socket.on('leave_room', handleLeave);
+  socket.on('disconnect', handleLeave);
 });
-
-// User disconnection / leave cleanup helper
-function cleanupUser(socketId, roomCode) {
-  const roomMap = activeRooms.get(roomCode);
-  if (!roomMap || !roomMap.has(socketId)) return;
-
-  const leavingUser = roomMap.get(socketId);
-  roomMap.delete(socketId);
-
-  io.to(roomCode).emit('user_left', { socketId, user: leavingUser });
-
-  // Host transfer if host left
-  if (leavingUser && leavingUser.isHost && roomMap.size > 0) {
-    const newHostSocketId = roomMap.keys().next().value;
-    const newHost = roomMap.get(newHostSocketId);
-    newHost.isHost = true;
-    io.to(roomCode).emit('host_changed', { newHostSocketId });
-  }
-
-  // Auto-delete room if empty
-  if (roomMap.size === 0) {
-    activeRooms.delete(roomCode);
-    const room = rooms.get(roomCode);
-    if (room && room.autoDelete) {
-      rooms.delete(roomCode);
-      messages.delete(roomCode);
-    }
-  }
-}
 
 // Start Server
 server.listen(PORT, HOST, () => {
