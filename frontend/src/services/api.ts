@@ -14,6 +14,18 @@ function getBackendUrl(): string {
 const BACKEND_URL = getBackendUrl();
 const API_BASE = BACKEND_URL ? `${BACKEND_URL}/api` : '/api';
 
+async function parseJsonResponse(res: Response) {
+  const text = await res.text();
+  if (!text) {
+    throw new Error('Server returned an empty response. Please try again in a few seconds.');
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('Backend server is warming up on Render. Please click Create & Launch again in 5 seconds.');
+  }
+}
+
 export async function createRoom(data: { name: string; password?: string; autoDelete?: boolean }): Promise<Room> {
   try {
     const res = await fetch(`${API_BASE}/rooms`, {
@@ -21,14 +33,14 @@ export async function createRoom(data: { name: string; password?: string; autoDe
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
-    const json = await res.json();
+    const json = await parseJsonResponse(res);
     if (!res.ok || !json.success) {
       throw new Error(json.error || 'Failed to create room');
     }
     return json.room;
   } catch (err: any) {
     if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
-      throw new Error(`Unable to connect to backend server. Make sure VITE_BACKEND_URL in Vercel is set to your Render URL (https://...).`);
+      throw new Error(`Unable to connect to backend server at ${API_BASE}. Make sure VITE_BACKEND_URL is saved and redeployed on Vercel.`);
     }
     throw err;
   }
@@ -37,33 +49,37 @@ export async function createRoom(data: { name: string; password?: string; autoDe
 export async function getRoom(roomCode: string): Promise<Room> {
   try {
     const res = await fetch(`${API_BASE}/rooms/${roomCode}`);
-    const json = await res.json();
+    const json = await parseJsonResponse(res);
     if (!res.ok || !json.success) {
       throw new Error(json.error || 'Room not found');
     }
     return json.room;
   } catch (err: any) {
     if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
-      throw new Error(`Unable to connect to backend server. Check VITE_BACKEND_URL setting on Vercel.`);
+      throw new Error(`Unable to connect to backend server.`);
     }
     throw err;
   }
 }
 
 export async function verifyRoomPassword(roomCode: string, password: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/rooms/${roomCode}/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
-  });
-  const json = await res.json();
-  return res.ok && json.verified;
+  try {
+    const res = await fetch(`${API_BASE}/rooms/${roomCode}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const json = await parseJsonResponse(res);
+    return res.ok && json.verified;
+  } catch {
+    return false;
+  }
 }
 
 export async function fetchRoomMessages(roomCode: string): Promise<Message[]> {
   try {
     const res = await fetch(`${API_BASE}/rooms/${roomCode}/messages`);
-    const json = await res.json();
+    const json = await parseJsonResponse(res);
     if (!res.ok || !json.success) {
       return [];
     }
@@ -81,7 +97,7 @@ export async function uploadFileAttachment(file: File): Promise<Attachment> {
     method: 'POST',
     body: formData,
   });
-  const json = await res.json();
+  const json = await parseJsonResponse(res);
   if (!res.ok || !json.success) {
     throw new Error(json.error || 'File upload failed');
   }
