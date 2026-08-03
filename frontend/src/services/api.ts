@@ -1,6 +1,7 @@
 import { Room, Message, Attachment } from '../types';
 
-const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL || '';
+const rawUrl = ((import.meta as any).env?.VITE_BACKEND_URL || '').trim();
+const BACKEND_URL = rawUrl.replace(/\/+$/, '');
 const API_BASE = BACKEND_URL ? `${BACKEND_URL}/api` : '/api';
 
 export async function createRoom(data: { name: string; password?: string; autoDelete?: boolean }): Promise<Room> {
