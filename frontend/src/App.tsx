@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Room, AudioSettings } from './types';
+import { Room } from './types';
 import { createRoom, getRoom, verifyRoomPassword } from './services/api';
 import { useWebRTC } from './hooks/useWebRTC';
 import { HeroSection } from './components/landing/HeroSection';
@@ -45,9 +45,13 @@ export function App() {
       if (code) {
         getRoom(code)
           .then((room) => {
-            setInitialJoinCode(room.roomCode);
-            setRequiresPassword(!!room.hasPassword);
-            setIsJoinOpen(true);
+            if (!room.hasPassword) {
+              setActiveRoom(room);
+            } else {
+              setInitialJoinCode(room.roomCode);
+              setRequiresPassword(true);
+              setIsJoinOpen(true);
+            }
           })
           .catch((err) => {
             console.warn('Room not found from URL:', err);
@@ -145,7 +149,7 @@ export function App() {
               onClose={() => setIsChatOpen(false)}
               roomCode={activeRoom.roomCode}
               currentUserId={selfInfo?.socketId || currentGuestId}
-              displayName={displayName}
+              displayName={displayName || 'Guest'}
               avatarColor={avatarColor}
               onUnreadCountChange={(count) => setUnreadChatCount(count)}
             />
