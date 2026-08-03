@@ -16,10 +16,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   onReply,
   onDelete,
 }) => {
-  const isOwn = message.userId === currentUserId;
-  const initial = message.displayName.charAt(0).toUpperCase();
+  const isOwn = message?.userId === currentUserId;
+  const safeName = message?.displayName || 'Guest';
+  const initial = safeName.charAt(0).toUpperCase();
 
-  const formatTime = (isoString: string) => {
+  const formatTime = (isoString?: string) => {
+    if (!isoString) return '';
     try {
       const date = new Date(isoString);
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -33,7 +35,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       {/* User Avatar */}
       <div
         className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 shrink-0 shadow-md"
-        style={{ backgroundColor: message.avatarColor || '#00f2fe' }}
+        style={{ backgroundColor: message?.avatarColor || '#00f2fe' }}
       >
         {initial}
       </div>
@@ -42,12 +44,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       <div className={clsx('flex flex-col max-w-[75%]', isOwn ? 'items-end' : 'items-start')}>
         {/* Author Name & Time Header */}
         <div className="flex items-center gap-2 mb-1 text-[11px] text-slate-400">
-          <span className="font-semibold text-slate-300">{message.displayName}</span>
-          <span>{formatTime(message.createdAt)}</span>
+          <span className="font-semibold text-slate-300">{safeName}</span>
+          <span>{formatTime(message?.createdAt)}</span>
         </div>
 
         {/* Reply Reference Preview */}
-        {message.replyToAuthor && (
+        {message?.replyToAuthor && (
           <div className="mb-1.5 px-3 py-1 rounded-lg bg-white/5 border-l-2 border-cyan-400 text-xs text-slate-400">
             <span className="text-cyan-400 font-semibold">{message.replyToAuthor}: </span>
             <span className="italic">{message.replyToContent}</span>
@@ -63,11 +65,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               : 'glass-card border border-white/10 text-slate-100 rounded-tl-xs'
           )}
         >
-          {message.isDeleted ? <span className="italic text-slate-400 text-xs">This message was deleted.</span> : message.content}
+          {message?.isDeleted ? <span className="italic text-slate-400 text-xs">This message was deleted.</span> : (message?.content || '')}
         </div>
 
         {/* Message Actions (Reply & Delete) */}
-        {!message.isDeleted && (
+        {!message?.isDeleted && (
           <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 mt-1 transition-opacity">
             <button
               onClick={() => onReply(message)}
