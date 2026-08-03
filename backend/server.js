@@ -151,7 +151,7 @@ app.get('/api/rooms/:roomCode/messages', (req, res) => {
   res.json({ success: true, messages: activeMsgs });
 });
 
-// 5. Upload File Attachment (Legacy handler)
+// 5. Upload File Attachment
 app.post('/api/upload', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
@@ -292,17 +292,21 @@ io.on('connection', (socket) => {
     io.to(currentRoomCode).emit('user_left', { socketId: targetSocketId });
   });
 
-  // 5. Live Chat Messaging
-  socket.on('send_message', ({ text, attachment }) => {
+  // 5. Live Chat Messaging (Matched to frontend Message interface)
+  socket.on('send_message', (data) => {
     if (!currentRoomCode || !currentUser) return;
 
+    const textContent = sanitize(data.content || data.text || '', 1000);
     const messageObj = {
       id: uuidv4(),
-      senderId: socket.id,
-      senderName: currentUser.displayName,
-      text: sanitize(text || '', 1000),
-      attachment: attachment || null,
-      timestamp: new Date().toISOString(),
+      roomId: currentRoomCode,
+      userId: socket.id,
+      displayName: currentUser.displayName,
+      avatarColor: data.avatarColor || '#00f2fe',
+      content: textContent,
+      replyToAuthor: data.replyTo ? data.replyTo.displayName : null,
+      replyToContent: data.replyTo ? data.replyTo.content : null,
+      createdAt: new Date().toISOString(),
       isDeleted: false
     };
 
@@ -311,7 +315,7 @@ io.on('connection', (socket) => {
     }
     messages.get(currentRoomCode).push(messageObj);
 
-    io.to(currentRoomCode).emit('new_message', { message: messageObj });
+    io.to(currentRoomCode).emit('new_message', messageObj);
   });
 
   socket.on('typing_indicator', ({ isTyping }) => {
