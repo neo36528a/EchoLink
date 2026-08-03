@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://echouser:echopassword@db:5432/echolink
+      - SECRET_KEY=echolink-super-secret-key-prod
+      - CORS_ALLOWED_ORIGINS=*
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend/uploads:/app/uploads
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./frontend/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=echouser
+      - POSTGRES_PASSWORD=echopassword
+      - POSTGRES_DB=echolink
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U echouser -d echolink"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
