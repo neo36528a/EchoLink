@@ -11,20 +11,25 @@ export interface Room {
 
 export interface Participant {
   socketId: string;
-  guestId: string;
+  guestId?: string;
+  userId?: string;
   displayName: string;
-  avatarColor: string;
-  isHost: boolean;
-  isMuted: boolean;
-  isDeafened: boolean;
-  isSpeaking: boolean;
+  avatarColor?: string;
+  isHost?: boolean;
+  isMuted?: boolean;
+  isMicOn?: boolean;
+  isCamOn?: boolean;
+  isDeafened?: boolean;
+  isHandRaised?: boolean;
+  isSpeaking?: boolean;
+  joinedAt?: string;
   audioStream?: MediaStream;
 }
 
 export interface Attachment {
   id: string;
   filename: string;
-  originalName: string;
+  originalName?: string;
   fileUrl: string;
   fileType: string;
   fileSize: number;
@@ -32,7 +37,8 @@ export interface Attachment {
 
 export interface Message {
   id: string;
-  roomCode: string;
+  roomId?: string;
+  roomCode?: string;
   userId: string;
   displayName: string;
   avatarColor: string;
