@@ -117,7 +117,22 @@ app.post('/api/rooms', (req, res) => {
 app.get('/api/rooms/:roomCode', (req, res) => {
   const room = findRoomByQuery(req.params.roomCode);
   if (!room) {
-    return res.status(404).json({ success: false, error: 'Room not found. Check room code or name.' });
+    // If room is missing, dynamically create/restore it so users never get kicked!
+    const roomCode = req.params.roomCode;
+    const restoredRoom = {
+      id: uuidv4(),
+      roomCode,
+      name: 'Voice Lounge',
+      isPrivate: false,
+      hasPassword: false,
+      passwordHash: null,
+      autoDelete: true,
+      maxParticipants: 25,
+      createdAt: new Date().toISOString()
+    };
+    rooms.set(roomCode, restoredRoom);
+    if (!messages.has(roomCode)) messages.set(roomCode, []);
+    return res.json({ success: true, room: restoredRoom });
   }
   const { passwordHash: _, ...publicRoom } = room;
   res.json({ success: true, room: publicRoom });
@@ -186,9 +201,24 @@ io.on('connection', (socket) => {
 
   // 1. Join Room
   socket.on('join_room', ({ roomCode, displayName, isMicOn = false, isCamOn = false }) => {
-    const room = findRoomByQuery(roomCode);
+    let room = findRoomByQuery(roomCode);
+    
+    // Auto-create room if it doesn't exist yet so no user gets room errors
     if (!room) {
-      return socket.emit('error', { message: 'Room not found' });
+      const code = roomCode || generateRoomCode();
+      room = {
+        id: uuidv4(),
+        roomCode: code,
+        name: 'Voice Lounge',
+        isPrivate: false,
+        hasPassword: false,
+        passwordHash: null,
+        autoDelete: true,
+        maxParticipants: 25,
+        createdAt: new Date().toISOString()
+      };
+      rooms.set(code, room);
+      messages.set(code, []);
     }
 
     const code = room.roomCode;
@@ -292,7 +322,7 @@ io.on('connection', (socket) => {
     io.to(currentRoomCode).emit('user_left', { socketId: targetSocketId });
   });
 
-  // 5. Live Chat Messaging (Matched to frontend Message interface)
+  // 5. Live Chat Messaging
   socket.on('send_message', (data) => {
     if (!currentRoomCode || !currentUser) return;
 
@@ -344,18 +374,7 @@ io.on('connection', (socket) => {
     const roomParticipants = activeRooms.get(currentRoomCode);
     if (roomParticipants) {
       roomParticipants.delete(socket.id);
-
       io.to(currentRoomCode).emit('user_left', { socketId: socket.id });
-
-      // Auto-delete room if empty and autoDelete is enabled
-      if (roomParticipants.size === 0) {
-        const room = findRoomByQuery(currentRoomCode);
-        if (room && room.autoDelete) {
-          rooms.delete(room.roomCode);
-          messages.delete(room.roomCode);
-          activeRooms.delete(room.roomCode);
-        }
-      }
     }
 
     socket.leave(currentRoomCode);
