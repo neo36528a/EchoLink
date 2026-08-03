@@ -53,12 +53,16 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
         peersRef.current.forEach((pc) => {
-          const senders = pc.getSenders();
-          const sender = senders.find((s) => s.track?.kind === 'audio');
-          if (sender) {
-            sender.replaceTrack(audioTrack);
-          } else {
-            pc.addTrack(audioTrack, stream);
+          try {
+            const senders = pc.getSenders();
+            const sender = senders.find((s) => s.track?.kind === 'audio');
+            if (sender) {
+              sender.replaceTrack(audioTrack);
+            } else {
+              pc.addTrack(audioTrack, stream);
+            }
+          } catch (e) {
+            console.warn('Track addition warning:', e);
           }
         });
       }
@@ -82,7 +86,11 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
     // Add local tracks to PC
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current!);
+        try {
+          pc.addTrack(track, localStreamRef.current!);
+        } catch (e) {
+          console.warn('Failed to add track:', e);
+        }
       });
     }
 
@@ -111,7 +119,11 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'failed') {
-        pc.restartIce();
+        try {
+          pc.restartIce();
+        } catch (e) {
+          console.warn('ICE restart warning:', e);
+        }
       }
     };
 
@@ -167,7 +179,7 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
                 offer: pc.localDescription,
               });
             })
-            .catch((e) => console.error('Failed to create offer:', e));
+            .catch((e) => console.warn('Failed to create offer:', e));
         }
       });
 
@@ -211,33 +223,42 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
       createPeerConnection(sid);
     });
 
-    // 3. WebRTC signaling events
+    // 3. WebRTC signaling events safely wrapped
     socket.on('webrtc_offer', async ({ senderSocketId, offer }: { senderSocketId: string; offer: RTCSessionDescriptionInit }) => {
-      const pc = createPeerConnection(senderSocketId);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('webrtc_answer', {
-        targetSocketId: senderSocketId,
-        answer: pc.localDescription,
-      });
+      try {
+        const pc = createPeerConnection(senderSocketId);
+        if (pc.signalingState !== 'stable') return;
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('webrtc_answer', {
+          targetSocketId: senderSocketId,
+          answer: pc.localDescription,
+        });
+      } catch (e) {
+        console.warn('WebRTC offer error handled:', e);
+      }
     });
 
     socket.on('webrtc_answer', async ({ senderSocketId, answer }: { senderSocketId: string; answer: RTCSessionDescriptionInit }) => {
-      const pc = peersRef.current.get(senderSocketId);
-      if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      try {
+        const pc = peersRef.current.get(senderSocketId);
+        if (pc && pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+      } catch (e) {
+        console.warn('WebRTC answer error handled:', e);
       }
     });
 
     socket.on('webrtc_candidate', async ({ senderSocketId, candidate }: { senderSocketId: string; candidate: RTCIceCandidateInit }) => {
-      const pc = peersRef.current.get(senderSocketId);
-      if (pc && candidate) {
-        try {
+      try {
+        const pc = peersRef.current.get(senderSocketId);
+        if (pc && candidate) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.error('Error adding ICE candidate:', e);
         }
+      } catch (e) {
+        console.warn('ICE candidate error handled:', e);
       }
     });
 
@@ -268,7 +289,11 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
     socket.on('user_left', ({ socketId }: { socketId: string }) => {
       const pc = peersRef.current.get(socketId);
       if (pc) {
-        pc.close();
+        try {
+          pc.close();
+        } catch (e) {
+          console.warn('PC close warning:', e);
+        }
         peersRef.current.delete(socketId);
       }
       setParticipantsMap((prev) => {
@@ -295,7 +320,13 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
       socket.off('user_left');
       socket.off('kicked_from_room');
 
-      peersRef.current.forEach((pc) => pc.close());
+      peersRef.current.forEach((pc) => {
+        try {
+          pc.close();
+        } catch (e) {
+          console.warn('PC cleanup warning:', e);
+        }
+      });
       peersRef.current.clear();
 
       if (localStreamRef.current) {
