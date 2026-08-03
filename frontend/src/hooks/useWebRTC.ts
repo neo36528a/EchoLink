@@ -11,7 +11,7 @@ const ICE_SERVERS: RTCConfiguration = {
 };
 
 export function useWebRTC(roomCode: string, displayName: string, avatarColor: string) {
-  const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
+  const [participantsMap, setParticipantsMap] = useState<Map<string, Participant>>(new Map());
   const [selfInfo, setSelfInfo] = useState<Participant | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -99,7 +99,7 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
     // Remote Track Handler
     pc.ontrack = (event) => {
       const [remoteStream] = event.streams;
-      setParticipants((prev) => {
+      setParticipantsMap((prev) => {
         const next = new Map(prev);
         const peer = next.get(targetSocketId);
         if (peer) {
@@ -109,9 +109,8 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
       });
     };
 
-    // Connection state logging & cleanup on failure
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+      if (pc.iceConnectionState === 'failed') {
         pc.restartIce();
       }
     };
@@ -123,70 +122,87 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
   useEffect(() => {
     if (!roomCode) return;
 
-    // Join room
-    const guestId = localStorage.getItem('echolink_guest_id') || `guest_${Math.random().toString(36).substring(2, 9)}`;
-    localStorage.setItem('echolink_guest_id', guestId);
-
     initLocalAudio(audioSettings).then(() => {
       socket.emit('join_room', {
         roomCode,
-        guestId,
-        displayName,
-        avatarColor,
+        displayName: displayName || 'Guest',
+        isMicOn: !isMuted,
+        isCamOn: false,
       });
     });
 
-    // 1. Initial participants list received
-    socket.on('room_users', ({ users, selfInfo: me }: { users: Participant[]; selfInfo: Participant }) => {
-      setSelfInfo(me);
+    // 1. Successfully joined room
+    socket.on('room_joined', ({ participants: participantList, yourSocketId }: { participants: Participant[]; yourSocketId: string }) => {
       const initialMap = new Map<string, Participant>();
-      users.forEach((u) => {
-        initialMap.set(u.socketId, u);
-        // Create peer connection and offer to each existing user
-        const pc = createPeerConnection(u.socketId);
-        pc.createOffer()
-          .then((offer) => pc.setLocalDescription(offer))
-          .then(() => {
-            socket.emit('webrtc_offer', {
-              targetSocketId: u.socketId,
-              offer: pc.localDescription,
-              callerInfo: me,
-            });
-          })
-          .catch((e) => console.error('Failed to create offer:', e));
+      let self: Participant | null = null;
+
+      participantList.forEach((p) => {
+        if (p.socketId === yourSocketId || p.userId === yourSocketId) {
+          self = { ...p, avatarColor };
+        } else {
+          initialMap.set(p.socketId, { ...p, avatarColor });
+          // Create peer connection and send offer to existing participants
+          const pc = createPeerConnection(p.socketId);
+          pc.createOffer()
+            .then((offer) => pc.setLocalDescription(offer))
+            .then(() => {
+              socket.emit('webrtc_offer', {
+                targetSocketId: p.socketId,
+                offer: pc.localDescription,
+              });
+            })
+            .catch((e) => console.error('Failed to create offer:', e));
+        }
       });
-      setParticipants(initialMap);
+
+      if (!self) {
+        self = {
+          socketId: yourSocketId,
+          userId: yourSocketId,
+          displayName: displayName || 'Guest',
+          avatarColor,
+          isMicOn: !isMuted,
+          isCamOn: false,
+          isHandRaised: false,
+          isSpeaking: false,
+          joinedAt: new Date().toISOString(),
+        };
+      }
+
+      setSelfInfo(self);
+      setParticipantsMap(initialMap);
     });
 
-    // 2. New user joined
-    socket.on('user_joined', (user: Participant) => {
-      setParticipants((prev) => new Map(prev).set(user.socketId, user));
-      createPeerConnection(user.socketId);
+    // 2. New user joined room
+    socket.on('user_joined', ({ participant }: { participant: Participant }) => {
+      setParticipantsMap((prev) => {
+        const next = new Map(prev);
+        next.set(participant.socketId, { ...participant, avatarColor: '#7f00ff' });
+        return next;
+      });
+      createPeerConnection(participant.socketId);
     });
 
     // 3. WebRTC signaling events
-    socket.on('webrtc_offer', async ({ callerSocketId, offer, callerInfo }) => {
-      if (callerInfo) {
-        setParticipants((prev) => new Map(prev).set(callerSocketId, callerInfo));
-      }
-      const pc = createPeerConnection(callerSocketId);
+    socket.on('webrtc_offer', async ({ senderSocketId, offer }: { senderSocketId: string; offer: RTCSessionDescriptionInit }) => {
+      const pc = createPeerConnection(senderSocketId);
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit('webrtc_answer', {
-        targetSocketId: callerSocketId,
+        targetSocketId: senderSocketId,
         answer: pc.localDescription,
       });
     });
 
-    socket.on('webrtc_answer', async ({ responderSocketId, answer }) => {
-      const pc = peersRef.current.get(responderSocketId);
+    socket.on('webrtc_answer', async ({ senderSocketId, answer }: { senderSocketId: string; answer: RTCSessionDescriptionInit }) => {
+      const pc = peersRef.current.get(senderSocketId);
       if (pc) {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
       }
     });
 
-    socket.on('webrtc_candidate', async ({ senderSocketId, candidate }) => {
+    socket.on('webrtc_candidate', async ({ senderSocketId, candidate }: { senderSocketId: string; candidate: RTCIceCandidateInit }) => {
       const pc = peersRef.current.get(senderSocketId);
       if (pc && candidate) {
         try {
@@ -197,20 +213,20 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
       }
     });
 
-    // 4. Media & Speaking events
-    socket.on('user_media_state_changed', ({ socketId, isMuted: muted, isDeafened: deafened }) => {
-      setParticipants((prev) => {
+    // 4. Media & Speaking state changes
+    socket.on('user_media_changed', ({ socketId, isMicOn: mic, isCamOn: cam, isHandRaised: hand }: { socketId: string; isMicOn: boolean; isCamOn: boolean; isHandRaised?: boolean }) => {
+      setParticipantsMap((prev) => {
         const next = new Map(prev);
         const peer = next.get(socketId);
         if (peer) {
-          next.set(socketId, { ...peer, isMuted: muted, isDeafened: deafened });
+          next.set(socketId, { ...peer, isMicOn: mic, isCamOn: cam, isHandRaised: Boolean(hand) });
         }
         return next;
       });
     });
 
-    socket.on('user_speaking', ({ socketId, isSpeaking: speaking }) => {
-      setParticipants((prev) => {
+    socket.on('user_speaking_changed', ({ socketId, isSpeaking: speaking }: { socketId: string; isSpeaking: boolean }) => {
+      setParticipantsMap((prev) => {
         const next = new Map(prev);
         const peer = next.get(socketId);
         if (peer) {
@@ -220,45 +236,36 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
       });
     });
 
-    // 5. User left
+    // 5. User left or kicked
     socket.on('user_left', ({ socketId }: { socketId: string }) => {
       const pc = peersRef.current.get(socketId);
       if (pc) {
         pc.close();
         peersRef.current.delete(socketId);
       }
-      setParticipants((prev) => {
+      setParticipantsMap((prev) => {
         const next = new Map(prev);
         next.delete(socketId);
         return next;
       });
     });
 
-    // 6. Host changed
-    socket.on('host_changed', ({ newHostSocketId }: { newHostSocketId: string }) => {
-      if (socket.id === newHostSocketId) {
-        setSelfInfo((prev) => (prev ? { ...prev, isHost: true } : null));
-      }
-      setParticipants((prev) => {
-        const next = new Map(prev);
-        next.forEach((p, sid) => {
-          next.set(sid, { ...p, isHost: sid === newHostSocketId });
-        });
-        return next;
-      });
+    socket.on('kicked_from_room', () => {
+      alert('You were removed from the room.');
+      window.location.href = '/';
     });
 
     return () => {
       socket.emit('leave_room', { roomCode });
-      socket.off('room_users');
+      socket.off('room_joined');
       socket.off('user_joined');
       socket.off('webrtc_offer');
       socket.off('webrtc_answer');
       socket.off('webrtc_candidate');
-      socket.off('user_media_state_changed');
-      socket.off('user_speaking');
+      socket.off('user_media_changed');
+      socket.off('user_speaking_changed');
       socket.off('user_left');
-      socket.off('host_changed');
+      socket.off('kicked_from_room');
 
       peersRef.current.forEach((pc) => pc.close());
       peersRef.current.clear();
@@ -267,7 +274,7 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
     };
-  }, [roomCode, displayName, avatarColor, socket, createPeerConnection, initLocalAudio, audioSettings]);
+  }, [roomCode, displayName, avatarColor, socket, createPeerConnection, initLocalAudio, audioSettings, isMuted]);
 
   // Mute / Unmute local mic
   const toggleMute = () => {
@@ -277,9 +284,8 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
         audioTrack.enabled = isMuted; // Toggle enablement
         setIsMuted(!isMuted);
         socket.emit('media_state_change', {
-          roomCode,
-          isMuted: !isMuted,
-          isDeafened,
+          isMicOn: isMuted,
+          isCamOn: false,
         });
       }
     }
@@ -290,24 +296,19 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
     const nextDeafen = !isDeafened;
     setIsDeafened(nextDeafen);
     socket.emit('media_state_change', {
-      roomCode,
-      isMuted,
-      isDeafened: nextDeafen,
+      isMicOn: !isMuted,
+      isCamOn: false,
     });
   };
 
   // Emit local speaking state
-  const notifySpeakingState = useCallback((isSpeaking: boolean, level: number) => {
-    socket.emit('speaking_state', {
-      roomCode,
-      isSpeaking,
-      level,
-    });
-  }, [socket, roomCode]);
+  const notifySpeakingState = useCallback((isSpeaking: boolean) => {
+    socket.emit('speaking_state', { isSpeaking });
+  }, [socket]);
 
   // Host Kick user
   const kickParticipant = (targetSocketId: string) => {
-    socket.emit('kick_participant', { roomCode, targetSocketId });
+    socket.emit('kick_participant', { targetSocketId });
   };
 
   const updateAudioSettings = (newSettings: AudioSettings) => {
@@ -317,7 +318,7 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
 
   return {
     localStream,
-    participants: Array.from(participants.values()),
+    participants: Array.from(participantsMap.values()),
     selfInfo,
     isMuted,
     isDeafened,
