@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
 import { Input } from '../common/Input';
 import { Button } from '../common/Button';
-import { Lock, ShieldAlert, Sparkles } from 'lucide-react';
+import { Lock, Sparkles } from 'lucide-react';
 
 interface CreateRoomModalProps {
   isOpen: boolean;
@@ -15,16 +15,21 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
   const [password, setPassword] = useState('');
   const [autoDelete, setAutoDelete] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    setError('');
     setLoading(true);
     try {
       await onCreate(name.trim(), password.trim() || undefined, autoDelete);
       setName('');
       setPassword('');
+      setError('');
       onClose();
+    } catch (err: any) {
+      setError(err.message || 'Connecting to server... If Render is starting up, please try again in a few seconds.');
     } finally {
       setLoading(false);
     }
@@ -63,6 +68,12 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
             className="w-4 h-4 rounded accent-cyan-400 bg-slate-900 cursor-pointer"
           />
         </div>
+
+        {error && (
+          <div className="p-3 text-xs bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 font-medium leading-relaxed">
+            {error}
+          </div>
+        )}
 
         <div className="flex justify-end gap-2 mt-2">
           <Button type="button" variant="ghost" onClick={onClose}>
