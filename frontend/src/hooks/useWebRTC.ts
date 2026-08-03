@@ -132,22 +132,38 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
     });
 
     // 1. Successfully joined room
-    socket.on('room_joined', ({ participants: participantList, yourSocketId }: { participants: Participant[]; yourSocketId: string }) => {
+    socket.on('room_joined', (data: any) => {
+      const participantList: any[] = data?.participants || [];
+      const yourSocketId: string = data?.yourSocketId || socket.id;
+
       const initialMap = new Map<string, Participant>();
       let self: Participant | null = null;
 
-      participantList.forEach((p) => {
-        if (p.socketId === yourSocketId || p.userId === yourSocketId) {
-          self = { ...p, avatarColor };
+      participantList.forEach((p: any) => {
+        const sid = p.socketId || p.userId || p.id;
+        const normalizedParticipant: Participant = {
+          socketId: sid,
+          userId: sid,
+          displayName: p.displayName || 'Guest',
+          avatarColor: p.avatarColor || '#00f2fe',
+          isHost: Boolean(p.isHost),
+          isMuted: Boolean(p.isMuted || p.isMicOn === false),
+          isDeafened: Boolean(p.isDeafened),
+          isSpeaking: Boolean(p.isSpeaking),
+          audioStream: p.audioStream,
+        };
+
+        if (sid === yourSocketId || sid === socket.id) {
+          self = normalizedParticipant;
         } else {
-          initialMap.set(p.socketId, { ...p, avatarColor });
+          initialMap.set(sid, normalizedParticipant);
           // Create peer connection and send offer to existing participants
-          const pc = createPeerConnection(p.socketId);
+          const pc = createPeerConnection(sid);
           pc.createOffer()
             .then((offer) => pc.setLocalDescription(offer))
             .then(() => {
               socket.emit('webrtc_offer', {
-                targetSocketId: p.socketId,
+                targetSocketId: sid,
                 offer: pc.localDescription,
               });
             })
@@ -157,15 +173,14 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
 
       if (!self) {
         self = {
-          socketId: yourSocketId,
-          userId: yourSocketId,
+          socketId: yourSocketId || socket.id || 'local_user',
+          userId: yourSocketId || socket.id || 'local_user',
           displayName: displayName || 'Guest',
-          avatarColor,
-          isMicOn: !isMuted,
-          isCamOn: false,
-          isHandRaised: false,
+          avatarColor: avatarColor || '#00f2fe',
+          isHost: true,
+          isMuted,
+          isDeafened: false,
           isSpeaking: false,
-          joinedAt: new Date().toISOString(),
         };
       }
 
@@ -174,13 +189,26 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
     });
 
     // 2. New user joined room
-    socket.on('user_joined', ({ participant }: { participant: Participant }) => {
+    socket.on('user_joined', ({ participant }: { participant: any }) => {
+      if (!participant) return;
+      const sid = participant.socketId || participant.userId || participant.id;
+      const normalizedParticipant: Participant = {
+        socketId: sid,
+        userId: sid,
+        displayName: participant.displayName || 'Guest',
+        avatarColor: participant.avatarColor || '#7f00ff',
+        isHost: Boolean(participant.isHost),
+        isMuted: Boolean(participant.isMuted || participant.isMicOn === false),
+        isDeafened: Boolean(participant.isDeafened),
+        isSpeaking: Boolean(participant.isSpeaking),
+      };
+
       setParticipantsMap((prev) => {
         const next = new Map(prev);
-        next.set(participant.socketId, { ...participant, avatarColor: '#7f00ff' });
+        next.set(sid, normalizedParticipant);
         return next;
       });
-      createPeerConnection(participant.socketId);
+      createPeerConnection(sid);
     });
 
     // 3. WebRTC signaling events
@@ -219,7 +247,7 @@ export function useWebRTC(roomCode: string, displayName: string, avatarColor: st
         const next = new Map(prev);
         const peer = next.get(socketId);
         if (peer) {
-          next.set(socketId, { ...peer, isMicOn: mic, isCamOn: cam, isHandRaised: Boolean(hand) });
+          next.set(socketId, { ...peer, isMuted: !mic, isMicOn: mic, isCamOn: cam, isHandRaised: Boolean(hand) });
         }
         return next;
       });
