@@ -2,10 +2,19 @@ import { io, Socket } from 'socket.io-client';
 
 let socket: Socket | null = null;
 
+function getSocketUrl(): string {
+  let rawUrl = ((import.meta as any).env?.VITE_BACKEND_URL || '').trim();
+  if (!rawUrl) return typeof window !== 'undefined' ? window.location.origin : '';
+  rawUrl = rawUrl.replace(/\/+$/, '');
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && rawUrl.startsWith('http://')) {
+    rawUrl = rawUrl.replace('http://', 'https://');
+  }
+  return rawUrl;
+}
+
 export function getSocket(): Socket {
   if (!socket) {
-    const rawUrl = ((import.meta as any).env?.VITE_BACKEND_URL || '').trim();
-    const URL = rawUrl ? rawUrl.replace(/\/+$/, '') : window.location.origin;
+    const URL = getSocketUrl();
     socket = io(URL, {
       autoConnect: true,
       transports: ['websocket', 'polling'],
