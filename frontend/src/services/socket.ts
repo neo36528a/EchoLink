@@ -4,7 +4,8 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    const URL = (import.meta as any).env?.VITE_BACKEND_URL || window.location.origin;
+    const rawUrl = ((import.meta as any).env?.VITE_BACKEND_URL || '').trim();
+    const URL = rawUrl ? rawUrl.replace(/\/+$/, '') : window.location.origin;
     socket = io(URL, {
       autoConnect: true,
       transports: ['websocket', 'polling'],
